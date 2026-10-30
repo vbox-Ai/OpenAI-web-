@@ -1,0 +1,84 @@
+name: iOS 发布
+
+# 构建 aarch64-apple-ios 插件包并发布到本仓库 Releases：
+#   tag   = web-v{version}（对齐插件索引 detail 的 tag 模板）
+#   asset = agent2api-web-providers-{version}-aarch64-apple-ios.zip
+# iOS 的 AMFI 要求被 posix_spawn 的二进制有带 entitlements 的 ad-hoc 签名，
+# 裸 `ldid -S` 会被拒（build 24 实测），必须 `ldid -S<ent.plist>`。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ios-release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust（含 iOS 目标）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: 读取版本号
+        id: meta
+        run: |
+          VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=web-v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: 构建（aarch64-apple-ios）
+        run: cargo build --release --target aarch64-apple-ios --bin agent2api-web-providers
+
+      - name: ldid 签名（ad-hoc + entitlements）
+        run: |
+          brew install ldid 2>/dev/null || true
+          cat > helper.entitlements <<'PLEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>platform-application</key><true/>
+            <key>com.apple.private.security.no-container</key><true/>
+            <key>get-task-allow</key><true/>
+            <key>com.apple.private.skip-library-validation</key><true/>
+          </dict>
+          </plist>
+          PLEOF
+          ldid -Shelper.entitlements "target/aarch64-apple-ios/release/agent2api-web-providers"
+          echo "signed agent2api-web-providers (ad-hoc + entitlements)"
+
+      - name: 打包插件 zip
+        run: |
+          python3 - <<'PYEOF'
+          import json, zipfile, os
+          ver = '${{ steps.meta.outputs.version }}'
+          with open('pack.json', encoding='utf-8') as f:
+              m = json.load(f)
+          m['entry']['aarch64-apple-ios'] = 'bin/agent2api-web-providers'
+          asset = f'agent2api-web-providers-{ver}-aarch64-apple-ios.zip'
+          with zipfile.ZipFile(asset, 'w', zipfile.ZIP_DEFLATED) as z:
+              z.writestr('pack.json', json.dumps(m, ensure_ascii=False, indent=2))
+              z.write('target/aarch64-apple-ios/release/agent2api-web-providers', 'bin/agent2api-web-providers')
+              if os.path.isdir('assets'):
+                  for root, _, files in os.walk('assets'):
+                      for fn in files:
+                          p = os.path.join(root, fn)
+                          z.write(p, p)
+          print('asset:', asset, os.path.getsize(asset), 'bytes')
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f'ASSET={asset}\n')
+          PYEOF
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: 网页提供商 ${{ steps.meta.outputs.version }}（iOS）
+          files: ${{ env.ASSET }}
+          body: |
+            aarch64-apple-ios 插件包（ldid ad-hoc + entitlements 签名）。
+            由插件索引 vbox-Ai/Agent2plugin 指向本仓库分发。
