@@ -11,7 +11,7 @@ mod stream;
 use std::time::Duration;
 use md5::{Digest, Md5};
 use agent2api_provider_protocol as proto;
-use agent2api_provider_sdk::{control_error, ConversationSink, PluginCtx, Provider, ProviderMeta, SendFuture};
+use agent2api_provider_sdk::{control_error, unsupported, ConversationSink, PluginCtx, Provider, ProviderMeta, SendFuture};
 use futures::StreamExt;
 use serde_json::{json, Value};
 
@@ -149,6 +149,66 @@ impl Provider for DeepseekWebProvider {
                 extra_fields: vec![proto::LoginField { key: "cookie".into(), label: "网页 Cookie".into(), placeholder: "官方网页正常登录后的 Cookie；风控时请手动更新".into(), optional: true, multiline: true }] }])
             .with_account_features(proto::AccountFeatures { identifier: vec!["uid".into()], ..Default::default() })
     }
+    /// `auth.methods`：把 `with_login` 里声明的静态登录方式投影成网关 UI 需要的
+    /// 动态元数据（`LoginMethodsMetadata`）。网关的「添加账号」弹窗走这条通道，
+    /// 缺了它界面会显示「该提供商尚未申报动态登录方式」。
+    ///
+    /// DeepSeek 只有「填凭证」（token + 可选 cookie），映射成 `type: "api"`
+    /// （不是 oauth：没有浏览器授权流程，也不需要回调）。
+    fn admin_action<'a>(
+        &'a self,
+        _ctx: &'a PluginCtx,
+        _account: &'a str,
+        action: &'a str,
+        _payload: &'a Value,
+    ) -> SendFuture<'a, Value> {
+        Box::pin(async move {
+            if action != "auth.methods" {
+                return Err(unsupported(format!("该提供商没有实现管理动作「{action}」")));
+            }
+            let mut methods = Vec::new();
+            for (index, method) in self.meta().login_methods.iter().enumerate() {
+                match method {
+                    proto::LoginMethod::Token { label, placeholder, extra_fields } => {
+                        let mut prompts = vec![json!({
+                            "key": "token",
+                            "type": "text",
+                            "label": label,
+                            "placeholder": placeholder,
+                            "optional": false,
+                            "secret": true,
+                        })];
+                        for field in extra_fields {
+                            prompts.push(json!({
+                                "key": field.key,
+                                "type": "text",
+                                "label": field.label,
+                                "placeholder": field.placeholder,
+                                "optional": field.optional,
+                                "secret": true,
+                            }));
+                        }
+                        methods.push(json!({
+                            "methodIndex": index,
+                            "type": "api",
+                            "label": label,
+                            "prompts": prompts,
+                            "localOnly": false,
+                            "manualCallback": false,
+                            "callbackInput": "url",
+                        }));
+                    }
+                    // 其余形态（Browser/Sms/Import）本家没有声明，忽略即可。
+                    _ => {}
+                }
+            }
+            if methods.is_empty() {
+                return Err(unsupported("该提供商没有可用的动态登录方式".to_string()));
+            }
+            Ok(json!({ "methods": methods }))
+        })
+    }
+
     fn conversation<'a>(&'a self, ctx: &'a PluginCtx, req: proto::ConversationRequest, sink: ConversationSink<'a>) -> SendFuture<'a, ()> {
         Box::pin(async move {
             let mut sink = sink;
