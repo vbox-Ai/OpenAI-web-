@@ -63,8 +63,8 @@ pub mod sign;
 pub mod tasks;
 
 use agent2api_provider_protocol as proto;
-use agent2api_provider_sdk::{ChatPlan, PluginCtx, Provider, ProviderMeta, SendFuture};
-use serde_json::Value;
+use agent2api_provider_sdk::{ChatPlan, PluginCtx, Provider, ProviderMeta, SendFuture, unsupported};
+use serde_json::{json, Value};
 
 use crate::errors::GatewayError;
 use crate::logging;
@@ -587,6 +587,79 @@ impl Provider for ChatglmProvider {
 
     fn account_identity(&self, secret: &Value) -> Result<String, String> {
         Ok(identity_of(secret))
+    }
+
+    /// `auth.methods`：把 `with_login` 的三条登录路径投影成网关 UI 需要的动态
+    /// 元数据。网关的「添加账号」弹窗走这条通道，缺了它会显示「尚未申报动态
+    /// 登录方式」，手动填凭证 / 访客 / 导入本机登录态都用不了。
+    fn admin_action<'a>(
+        &'a self,
+        _ctx: &'a PluginCtx,
+        _account: &'a str,
+        action: &'a str,
+        _payload: &'a Value,
+    ) -> SendFuture<'a, Value> {
+        Box::pin(async move {
+            if action != "auth.methods" {
+                return Err(unsupported(format!("该提供商没有实现管理动作「{action}」")));
+            }
+            let mut methods = Vec::new();
+            for (index, method) in self.meta().login_methods.iter().enumerate() {
+                let (label, prompts, instructions) = match method {
+                    proto::LoginMethod::Token { label, placeholder, extra_fields } => {
+                        let mut prompts = vec![json!({
+                            "key": "token",
+                            "type": "text",
+                            "label": label,
+                            "placeholder": placeholder,
+                            "optional": false,
+                            "secret": true,
+                        })];
+                        for field in extra_fields {
+                            prompts.push(json!({
+                                "key": field.key,
+                                "type": "text",
+                                "label": field.label,
+                                "placeholder": field.placeholder,
+                                "optional": field.optional,
+                                "secret": true,
+                            }));
+                        }
+                        (label.clone(), prompts, None)
+                    }
+                    // 访客：一键换发，无输入。
+                    proto::LoginMethod::Guest => (
+                        "访客登录".to_string(),
+                        Vec::new(),
+                        Some("无需任何凭证，插件用固定设备号换发访客身份；访客没有积分体系。".to_string()),
+                    ),
+                    // 导入本机登录态：桌面端读客户端 Cookies，无输入。
+                    proto::LoginMethod::Desktop { button, hint } => (
+                        button.clone(),
+                        Vec::new(),
+                        hint.clone(),
+                    ),
+                    _ => continue,
+                };
+                let mut entry = json!({
+                    "methodIndex": index,
+                    "type": "api",
+                    "label": label,
+                    "prompts": prompts,
+                    "localOnly": false,
+                    "manualCallback": false,
+                    "callbackInput": "url",
+                });
+                if let Some(text) = instructions {
+                    entry["instructions"] = json!(text);
+                }
+                methods.push(entry);
+            }
+            if methods.is_empty() {
+                return Err(unsupported("该提供商没有可用的动态登录方式".to_string()));
+            }
+            Ok(json!({ "methods": methods }))
+        })
     }
 }
 
