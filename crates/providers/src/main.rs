@@ -1,18 +1,9 @@
-#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
-mod content_block;
-#[cfg(windows)]
-mod crypto;
-mod errors;
-mod headers;
-mod http;
-mod json;
-mod logging;
-mod onboarding;
-mod providers;
-mod quota;
-mod store;
+//! Agent2API 网页提供商插件（独立进程入口）。
+//!
+//! 真正的逻辑在 `lib.rs`：`run_standalone()` 跑 `serve`（stdin/stdout）。
+//! 本文件只剩一个 `main`，让 bin 与 lib 解耦 —— lib 同时服务「独立进程」
+//! 与「进程内嵌入（iOS 静态库）」两种形态。
 
 fn main() {
-    agent2api_provider_sdk::serve_blocking(providers::registry());
+    agent2api_web_providers::run_standalone();
 }

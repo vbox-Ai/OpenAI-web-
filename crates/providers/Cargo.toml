@@ -6,26 +6,37 @@ edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
 
+# ── 两种形态（与 Agent2Providers 一致）──────────────────────────
+# bin：独立进程（spawn 模式，桌面端/服务端用）
+# lib：进程内嵌入（iOS 用 —— 沙箱禁止 spawn，直接链进 Runner）
+[lib]
+name = "agent2api_web_providers"
+path = "src/lib.rs"
+crate-type = ["staticlib", "rlib"]
+
 [[bin]]
 name = "agent2api-web-providers"
 path = "src/main.rs"
+required-features = ["bin"]
 
 [features]
 default = ["all"]
-all = ["chatglm", "deepseek"]
+# `bin` 控制是否编译 spawn 用的可执行文件；iOS 静态库嵌入不需要它。
+all = ["bin", "chatglm", "deepseek"]
+bin = []
 chatglm = []
 deepseek = []
 
 [dependencies]
-agent2api-provider-protocol = { git = "https://github.com/ProvidersPlugin/Agent2Providers", tag = "v3.3.0-beta.5.1" }
-agent2api-provider-sdk = { git = "https://github.com/ProvidersPlugin/Agent2Providers", tag = "v3.3.0-beta.5.1" }
+agent2api-provider-protocol = { git = "https://github.com/ProvidersPlugin/Agent2Providers", tag = "v3.3.0-beta.6" }
+agent2api-provider-sdk = { git = "https://github.com/ProvidersPlugin/Agent2Providers", tag = "v3.3.0-beta.6" }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "socks"] }
 base64 = "0.22"
 md-5 = "0.10"
 getrandom = "0.2"
 futures = "0.3"
-tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "io-util"] }
 
 [target.'cfg(windows)'.dependencies]
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
